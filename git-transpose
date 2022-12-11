@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+
+COMMAND=git-transpose
+
+die() {
+	echo "fatal: $COMMAND: $*" 1>&2
+	exit 1
+}
+
+info() {
+	echo "info: $COMMAND: $*" 1>&2
+}
+
+warning() {
+	echo "warning: $COMMAND: $*" 1>&2
+}
+
+error() {
+	echo "warning: $COMMAND: $*" 1>&2
+}
+
+debug() {
+	echo "debug: $COMMAND: $*" 1>&3
+}
+
+dispatch() {
+	local cmd=$1
+	shift 1
+	if test "$(type -t "_$cmd")" = "function"; then
+		"_$cmd" "$@"
+	else
+		die "'$cmd' is not a valid command"
+	fi
+}
+
+_is() {
+	_linearly-reachable() {
+		local from=$1
+		local commit=$2
+
+		test -n "$commit" || die "is: linearly-reachable: usage: {from} {commit}: $*"
+
+		if test -z "$(git rev-list $commit ^$from --merges)" -a -z "$(git rev-list $from ^$commit)"; then
+			echo true
+		else
+			echo false
+			false
+		fi
+	}
+
+	dispatch "$@"
+}
+
+_defer-output() {
+	err=$( (dispatch "$@") 2>&1) || {
+		rc=$?
+		echo "$err" 1>&2
+		exit $rc
+	}
+}
+
+_atomic() {
+	debug "atomic: $*"
+	local branch=$(git branch --show-current)
+	local head=$(git rev-parse HEAD)
+	local stash
+
+	if ! git diff HEAD --exit-code >/dev/null; then
+		stash=$(git stash create) || die "atomic: cannot create entry stash"
+	fi
+
+	(dispatch "$@")
+	rc=$?
+
+	err=$(
+		(
+			if ! git diff HEAD --exit-code > /dev/null; then
+				local exit_stash
+				exit_stash=$(git stash create)
+				warning "purging remnant state...$(exit_stash)"
+				git reset --hard HEAD
+			fi
+
+			if test -n "$branch"; then
+				if test "$(git rev-parse $branch)"  != "$head"; then
+					warning "restoring $branch to $head"
+					git checkout -q -B $branch $head || die "atomic: restore of branch failed"
+				else
+					git checkout -q $branch || die "atomic: restore of branch failed"
+				fi
+			else
+				git checkout -q $head^0 || die "atomic: restore of branch failed"
+			fi
+
+			if test -n "$stash"; then
+				git stash apply $stash
+			fi
+		) 2>&1
+	) || {
+		rc=$?
+		echo "$err" 1>&2
+	}
+
+	test $rc -eq 0 || exit $rc
+}
+
+_short() {
+	git rev-parse --short=8 $1
+}
+
+_swap() { # swaps the HEAD commit and its immediate predecessor and re-establishes the original tree
+	debug "swap: HEAD=$(_short HEAD)"
+
+	local base=$(git rev-parse HEAD^1^1)
+	local bottom=$(git rev-parse HEAD^1)
+	local top=$(git rev-parse HEAD)
+
+	(_is linearly-reachable $base $top >/dev/null) || die "swap: $(_short "$base") is not linearly reachable from $(_short "$top")"
+
+	_thunk() {
+		echo "info: checking out base...$(_short $base)" &&
+		git checkout $base^0 &&
+		echo "info: cherry-picking top...$(_short $top)" &&
+		if ! git cherry-pick --allow-empty --strategy ort -X ours $top; then
+			echo "info: recovering from cherry-pick failure" &&
+			# cherry-pick can fail for changes that are applied to files
+			# that were not present previously. In this case, we prefer the
+			# the deleted state.
+			git status --porcelain | grep ^DU | cut -f2 -d' ' | xargs -n1 git rm &&
+			GIT_EDITOR=cat git commit --allow-empty
+		fi &&
+		echo "info: cherry-picking bottom...$(_short "$bottom")" &&
+		git cherry-pick --allow-empty --strategy ort -X ours $bottom &&
+		echo "info: restoring tree @ $(_short "$top")" &&
+		git diff HEAD $top | git apply --ignore-whitespace --index --allow-empty &&
+		case "$on_conflict" in
+			squash)
+				GIT_EDITOR=cat git commit --amend --allow-empty
+			;;
+			split)
+				if ! git diff HEAD --exit-code >/dev/null; then
+					git commit -m "fixup! $(git log -n 1 --format=%s HEAD)"
+				fi
+			;;
+			*)
+				die "unsupported on-conflict option: $on_conflict"
+			;;
+		esac &&
+		git diff HEAD "$top" --exit-code  || die "swap: failed"
+	}
+
+	_thunk2() {
+		_defer-output thunk &&
+		git rev-parse HEAD
+	}
+
+	_atomic thunk2
+}
+
+_shell() {
+	"$@"
+}
+
+_bisect() {
+
+	_find-earliest-pick-point() {
+		local onto=$1
+		local top=$2
+
+		thunk() {
+			git cherry-pick --allow-empty --no-commit $top 2>/dev/null
+			rc=$?
+			git cherry-pick --abort
+			if test $rc -eq 0; then
+				return 1
+			else
+				return 0
+			fi
+		}
+
+		export -f thunk
+
+		_thunk() {
+			git bisect start $top^1 $onto &&
+			git bisect run bash -c thunk
+		}
+
+		_defer-output thunk &&
+		found=$(git rev-parse refs/bisect/bad) &&
+		_defer-output shell git bisect reset &&
+		echo $found || die "bisect: find-earliest-pick-point: failed"
+	}
+
+	dispatch "$@"
+}
+
+_non-adjacent-swap() {
+	debug "non-adjacent-swap: $(_short $1), HEAD=$(_short HEAD)"
+	local onto=$(git rev-parse --verify -q $1)
+	local top=$(git rev-parse HEAD)
+
+	_thunkA() {
+
+		# if onto == HEAD^1^1 then swap -> $top0 and return $top0 $top0^1
+
+		if test "$(git rev-parse HEAD^1)" = "$(git rev-parse $onto)"; then
+			echo $(git rev-parse --verify -q HEAD) $(git rev-parse --verify -q HEAD)
+			return
+		fi
+
+		local onto0=$(git rev-parse --verify -q HEAD^1^1)
+		if test "$onto0" = "$(git rev-parse --verify -q $onto)"; then
+			local top0
+			top0=$(_atomic swap) || exit $?
+			echo $(git rev-parse --verify -q $top0^1) $top0
+			return
+		fi
+
+		# bisect $onto..$top^1 to discover earliest commit onto whuch top can be cherry-picked without a merge-conflict -> $onto1
+		local onto1=$(_bisect find-earliest-pick-point $onto $top)
+
+		_thunkB() {
+			info "non-adjacent-swap: args $(_short $onto) $(_short $top)"
+
+			info "non-adjacent-swap: $(_short $top) can be cherry-picked onto $(_short $onto1)"
+
+			# cherry-pick $top onto $onto1 to yield $top1
+
+			local top1
+
+			git checkout -q $onto1^0
+			git cherry-pick $top --allow-empty 2>/dev/null || die "non-adjacent-swap: cherry-pick of $(_short $top) @ $(_short HEAD) failed"
+			top1=$(git rev-parse HEAD) || die "non-adjacent-swap: failed to cherry-pick $top onto $onto1"
+
+			# swap $top1 -> $top2
+
+			local top2
+			top2=$(_swap) || die "non-adjacent-swap: failed to swap $top1"
+
+			# checkout $top2^1
+
+			git checkout -q $top2 || die "non-adjacent-swap: failed to checkout $(_short $top2^1)"
+
+			# non-adajacent swap $onto -> $top3, $onto2
+		}
+
+		_defer-output thunkB
+
+		local top2=$(git rev-parse HEAD)
+		local bottom2=$(git rev-list HEAD ^$onto1 | tail -1)
+		git checkout -q $bottom2
+
+		result=$(_non-adjacent-swap $onto) || die "non-adjacent-swap: failed recursive non-adjacent-swap $onto @ $(_short HEAD)"
+
+		set -- $result
+		top3=$2
+		onto2=$1
+
+		_thunkC() {
+
+			# cherry-pick $top2 onto $top3 -> $top4
+
+			git checkout -q $top3 &&
+			git rebase --onto HEAD $bottom2 $top2 || die "non-adjacent-swap: failed to rebase $(_short bottom2) $(_short $top2) onto $(_short $top3)"
+			top4=$(git rev-parse HEAD)
+
+			# rebase --onto $top4 $onto1 $top^1 -> $top5
+
+			git rebase --onto $top4 $onto1 $top^1 || die "non-adjacent-swap: failed to rebase --onto $(_short $top4) $(_short $onto1) $(_short tmp-rebase)"
+		}
+
+		_defer-output thunkC
+
+		echo $onto2 $(git rev-parse HEAD)
+	}
+
+	_atomic thunkA
+}
+
+_non-adjacent-range-swap() {
+	debug "non-adjacent-range-swap: $(_short $1) $(_short $2): HEAD=$(_short HEAD)"
+
+	local onto=$1
+	local from=$2
+	local top=$(git rev-parse HEAD)
+	local commit
+
+	local nextTo=$from
+	local nextOnto=$onto
+
+	_thunk() {
+		git rev-list --reverse $top ^$from | while read commit; do
+			git checkout -q $nextTo &&
+			git cherry-pick --allow-empty $commit &&
+			output=$(_non-adjacent-swap $nextOnto) &&
+			set -- $output &&
+			nextOnto=$1 &&
+			nextTo=$2 || die "non-adjacent-range-swap: failed"
+			echo $nextOnto $nextTo
+		done | tail -1
+	}
+
+	_atomic thunk
+}
+
+_usage() {
+	die "usage: git transpose [ [--on-conflict squash|split] [--onto to-commit] [from-commit [commit]] ]"
+}
+
+_dump() {
+	(
+		echo "commit=$commit ($(_short $commit))"
+		echo "from=$from ($(_short $from))"
+		echo "onto=$onto ($(_short $onto))"
+		echo "on_conflict=$on_conflict"
+		echo "squash=$squash"
+		echo "update_head=$update_head"
+	) 1>&2
+}
+
+_main() {
+	local -a positional
+	local on_conflict=squash
+	local keep_empty_option=--no-keep-empty
+	local update_head=false
+	local squash=true
+	local onto
+
+	while test $# -gt 0; do
+		local arg=$1
+		shift 1
+		case "$arg" in
+			--onto)
+				test $# -gt 0 || usage
+				onto=$1
+				shift 1
+			;;
+			--on-conflict)
+				test $# -gt 0 || usage
+				on_conflict=$1
+				shift 1
+				case "$on_conflict" in
+					""|squash)
+						on_conflict=squash
+					;;
+					split)
+						keep_empty_option=--keep-empty
+						on_conflict=split
+					;;
+					*)
+						die "unrecognised --on-conflict option: $on_conflict"
+					;;
+				esac
+
+			;;
+			--update-head)
+				update_head=true
+			;;
+			--no-keep-empty|--keep-empty)
+				keep_empty_option=$arg
+			;;
+			--)
+				break
+			;;
+			--*)
+				_usage
+			;;
+			*)
+				positional=($positional $arg)
+			;;
+		esac
+	done
+
+
+	case "${#positional[@]}" in
+		0)
+			commit=HEAD
+			from=HEAD^1
+		;;
+		1)
+			commit=${positional[0]}
+			from=$commit^1
+		;;
+		2)
+			commit=${positional[1]}
+			from=${positional[0]}
+		;;
+		*)
+			_usage
+		;;
+	esac
+	if test -z "$onto"; then
+		onto=$from^1
+	fi
+
+	local branch=$(git branch --show-current)
+	local head=$(git rev-parse HEAD)
+
+	if test $# -gt 0; then
+		dispatch "$@"
+	else
+		git rev-parse -q --verify $from >/dev/null || die "$from does not specify a valid commit"
+		git rev-parse -q --verify $commit >/dev/null || die "$commit does not specify a valid commit"
+		git rev-parse -q --verify $onto >/dev/null || die "$onto does not specify a valid commit"
+
+		(_is linearly-reachable $onto $from >/dev/null) || die "onto:$onto is not linearly reachable from from:$from"
+		(_is linearly-reachable $from $commit >/dev/null) || die "from:$from is not linearly reachable from commit:$commit"
+		if $update_head; then
+			(_is linearly-reachable $commit $head >/dev/null) || die "commit:$commit is not linearly reachable from head:$head"
+		fi
+
+		onto=$(git rev-parse -q --verify $onto)
+		from=$(git rev-parse -q --verify $from)
+		commit=$(git rev-parse -q --verify $commit)
+
+		_thunk() {
+			git checkout -q $commit &&
+			local output &&
+			output=$(_non-adjacent-range-swap $onto $from) &&
+			set -- $output
+			if $squash; then
+				GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $2 &&
+				output="$1 $(git rev-parse HEAD)"
+			fi &&
+			echo $output || die "thunk failed"
+		}
+
+		local output
+		output=$(_atomic thunk) || exit $?
+		set -- $output
+		if $update_head; then
+			local new_head=$2
+			local stash
+
+			(git rebase -q --autostash --onto $new_head "$(git rev-parse -q --verify $commit)" "$head" || { git rebase --abort; false; }) &&
+			if test -n "$branch"; then
+				git checkout -q -B $branch HEAD
+			fi
+		else
+			echo "$output"
+		fi
+	fi 3>/dev/null
+}
+
+_main "$@"
