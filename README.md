@@ -10,22 +10,36 @@ git-transpose - automatically and reliably transposes a range of commits onto an
 ## Transposing directly adjacent commits
 Transposing two directly adjacent commits involves swapping their order.
 
-$C^0_{n}=C^0_{n-2}{\leftarrow}P^0_{n-1}{\leftarrow}P^0_{n}$
-
-If two commits edit different hunks, the swap can be achieved without conflict, otherwise the swap may induce a merge conflcit in one or both of the commits.
-
-In this case, the `ort` merge strategy is used with `ours` merge strategy option to resolve the conflicts in conflicting hunks in favour of the original hunk in both picks and then the final commit is then amended to match the tree of the original top commit.
-
-The resulting commit is therefore guaranteed, by design, to be tree-same to the original top commit but note that the tree of the final bottom commit is not guaranteed, in general, to be internally consistent since a mechanical resolution of
-a merge conflict cannot, in general, be guaranteed to be internally consistent.
-
-In general, the final top commit absorbs merge conflicts and resolves them in favour of the hunk present in the original top commit and conflicting hunks from bottom commits disappear from the final history.
+Given:
 
 $C^0_{n}=C^0_{n-2}{\leftarrow}P^0_{n-1}{\leftarrow}P^0_{n}$
 
-After transposition:
+transposition produces a new history, such that:
 
 $C^1_{n}=C^0_{n-2}{\leftarrow}P^1_{n}{\leftarrow}P^1_{n-1}$ and $treesame( C^0_{n}, C^1_{n})$
+
+If two commits edit different hunks, the swap can be achieved without conflict, otherwise the swap may induce a merge conflcit when the top commit is cherry-picked onto the base of the bottom commit.
+
+Symbolically, a merge conflict and its resolution can be understood by decomposing $P^0_{n}$ into a part, $K^0_{n}$, that commutes with $P^0_{n-1}$ and a part, $N^0_{n}$, that doesn't.
+
+$P^0_{n} = K^0_{n}{\leftarrow}N^0_{n}$
+
+$C^0_{n}=C^0_{n-2}{\leftarrow}P^0_{n-1}{\leftarrow}K^0_{n}{\leftarrow}N^0_{n}$
+
+Now we transpose $P^0_{n-1}$ and $K^0_{n}$ yieldng $C^1_{n}$ as follows:
+
+$C^1_{n}=C^0_{n-2}{\leftarrow}K^0_{n}{\leftarrow}P^0_{n-1}{\leftarrow}N^0_{n}$
+
+Next we define $P^1_{n-1}$ and $P^1_{n}$ as follows:
+
+$P^1_{n}=K^0_{n}$
+
+$P^1_{n-1}=P^0_{n-1}{\leftarrow}N^0_{n}$
+
+yielding:
+
+$C^1_{n}=C^0_{n-2}{\leftarrow}P^1_{n}{\leftarrow}P^1_{n-1}$ and $treesame( C^0_{n}, C^1_{n})$
+
 
 ## Transposing a single commit with a preceding range of commits
 
