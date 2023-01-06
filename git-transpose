@@ -214,7 +214,7 @@ _non-adjacent-swap() {
 		if test "$onto0" = "$(git rev-parse --verify -q $onto)"; then
 			local top0
 			top0=$(_atomic swap) || exit $?
-			echo $(git rev-parse --verify -q $top0^1) $top0
+			echo $top0 $(git rev-parse --verify -q $top0^1)
 			return
 		fi
 
@@ -255,8 +255,8 @@ _non-adjacent-swap() {
 		result=$(_non-adjacent-swap $onto) || die "non-adjacent-swap: failed recursive non-adjacent-swap $onto @ $(_short HEAD)"
 
 		set -- $result
-		top3=$2
-		onto2=$1
+		top3=$1
+		onto2=$2
 
 		_thunkC() {
 
@@ -273,7 +273,7 @@ _non-adjacent-swap() {
 
 		_defer-output thunkC
 
-		echo $onto2 $(git rev-parse HEAD)
+		echo $(git rev-parse HEAD) $onto2
 	}
 
 	_atomic thunkA
@@ -296,9 +296,9 @@ _non-adjacent-range-swap() {
 			git cherry-pick --allow-empty $commit &&
 			output=$(_non-adjacent-swap $nextOnto) &&
 			set -- $output &&
-			nextOnto=$1 &&
-			nextTo=$2 || die "non-adjacent-range-swap: failed"
-			echo $nextOnto $nextTo
+			nextOnto=$2 &&
+			nextTo=$1 || die "non-adjacent-range-swap: failed"
+			echo $nextTo $nextOnto
 		done | tail -1
 	}
 
@@ -419,11 +419,9 @@ _main() {
 			git checkout -q $commit &&
 			local output &&
 			output=$(_non-adjacent-range-swap $onto $from) &&
-			set -- $output
-			if $squash; then
-				GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $2 &&
-				output="$1 $(git rev-parse HEAD)"
-			fi &&
+			set -- $output &&
+			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $1 &&
+			output="$(git rev-parse HEAD)" &&
 			echo $output || die "thunk failed"
 		}
 
@@ -431,7 +429,7 @@ _main() {
 		output=$(_atomic thunk) || exit $?
 		set -- $output
 		if $update_head; then
-			local new_head=$2
+			local new_head=$1
 			local stash
 
 			(git rebase -q --autostash --onto $new_head "$(git rev-parse -q --verify $commit)" "$head" || { git rebase --abort; false; }) &&
