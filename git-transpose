@@ -438,8 +438,7 @@ _main() {
 		set -- $output
 		if $update_head; then
 			local new_head=$1
-
-			(git rebase -q --autostash --onto $new_head "$(git rev-parse -q --verify $commit)" "$head" || { git rebase --abort; false; }) &&
+			(git rebase -q --autostash --onto $new_head "$commit" "$head" || { git rebase --abort; false; }) &&
 			if test -n "$branch"; then
 				git checkout -q -B $branch HEAD
 			fi
