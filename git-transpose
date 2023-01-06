@@ -253,7 +253,10 @@ _non-adjacent-swap() {
 		local bottom2=$(git rev-list HEAD ^$onto1 | tail -1)
 		git checkout -q $bottom2
 
-		result=$(_non-adjacent-swap $onto) || die "non-adjacent-swap: failed recursive non-adjacent-swap $onto @ $(_short HEAD)"
+		if ! result=$(_non-adjacent-swap $onto); then
+			git submodule update
+			result=$(_non-adjacent-swap $onto) || die "non-adjacent-swap: failed recursive non-adjacent-swap $onto @ $(_short HEAD)"
+		fi
 
 		set -- $result
 		top3=$1
