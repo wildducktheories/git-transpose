@@ -52,6 +52,8 @@ _is() {
 }
 
 _defer-output() {
+	local rc
+	local err
 	err=$( (dispatch "$@") 2>&1) || {
 		rc=$?
 		echo "$err" 1>&2
