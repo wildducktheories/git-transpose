@@ -295,6 +295,10 @@ _non-adjacent-range-swap() {
 	local nextOnto=$onto
 
 	_thunk() {
+		if test "$onto" = "$from"; then
+			echo $top $top
+			return
+		fi
 		git rev-list --reverse $top ^$from | while read commit; do
 			git checkout -q $nextTo &&
 			git cherry-pick --allow-empty $commit &&
