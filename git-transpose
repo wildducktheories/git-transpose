@@ -443,7 +443,7 @@ _main() {
 				git checkout -q -B $branch HEAD
 			fi
 		else
-			echo "$output"
+			echo $output
 		fi
 	fi 3>/dev/null
 }
