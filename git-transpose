@@ -54,6 +54,7 @@ _is() {
 _defer-output() {
 	local rc
 	local err
+
 	err=$( (dispatch "$@") 2>&1) || {
 		rc=$?
 		echo "$err" 1>&2
@@ -315,7 +316,6 @@ _dump() {
 		echo "from=$from ($(_short $from))"
 		echo "onto=$onto ($(_short $onto))"
 		echo "on_conflict=$on_conflict"
-		echo "squash=$squash"
 		echo "update_head=$update_head"
 	) 1>&2
 }
@@ -430,7 +430,6 @@ _main() {
 		set -- $output
 		if $update_head; then
 			local new_head=$1
-			local stash
 
 			(git rebase -q --autostash --onto $new_head "$(git rev-parse -q --verify $commit)" "$head" || { git rebase --abort; false; }) &&
 			if test -n "$branch"; then
