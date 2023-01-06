@@ -321,6 +321,7 @@ _dump() {
 	(
 		echo "commit=$commit ($(_short $commit))"
 		echo "from=$from ($(_short $from))"
+		echo "keep_empty_option=$keep_empty_option"
 		echo "onto=$onto ($(_short $onto))"
 		echo "on_conflict=$on_conflict"
 		echo "update_head=$update_head"
