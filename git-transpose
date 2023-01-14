@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-
+set -o pipefail
 COMMAND=git-transpose
+DEBUG_FILE=/dev/null
 
 die() {
 	echo "fatal: $COMMAND: $*" 1>&2
@@ -124,7 +125,7 @@ _swap() { # swaps the HEAD commit and its immediate predecessor and re-establish
 		echo "info: checking out base...$(_short $base)" &&
 		git checkout $base^0 &&
 		echo "info: cherry-picking top...$(_short $top)" &&
-		if ! git cherry-pick --allow-empty --strategy ort -X ours $top; then
+		if ! git cherry-pick --allow-empty --keep-redundant-commits --strategy ort -X ours $top; then
 			echo "info: recovering from cherry-pick failure" &&
 			# cherry-pick can fail for changes that are applied to files
 			# that were not present previously. In this case, we prefer the
@@ -149,7 +150,7 @@ _swap() { # swaps the HEAD commit and its immediate predecessor and re-establish
 				die "unsupported on-conflict option: $on_conflict"
 			;;
 		esac &&
-		git diff HEAD "$top" --exit-code  || die "swap: failed"
+		git diff HEAD "$top" --exit-code  || die "swap: failed: git swap $top"
 	}
 
 	_thunk2() {
@@ -266,7 +267,8 @@ _non-adjacent-swap() {
 
 			git rebase --onto $top3 $bottom2 $top2 &&
 			top4=$(git rev-parse HEAD) ||
-			die "non-adjacent-swap: failed to rebase --onto $(_short $top3) $(_short bottom2) $(_short $top2) " &&
+			die "non-adjacent-swap: failed to rebase --onto $(_short $top3) $(_short bottom2) $(_short $top2) "
+
 			git rebase --onto $top4 $onto1 $top^1 ||
 			die "non-adjacent-swap: failed to rebase --onto $(_short $top4) $(_short $onto1) $(_short $top1^1)"
 		}
@@ -293,16 +295,25 @@ _non-adjacent-range-swap() {
 	_thunk() {
 		if test "$onto" = "$from"; then
 			echo $top $top
+		elif test "$from" = "$top"; then
+			echo $top $top
 		else
-			git rev-list --reverse $top ^$from | while read commit; do
+			local output
+			output=$(local rc=0; git rev-list --reverse $top ^$from | while test $rc -eq 0 && read commit; do
 				git checkout -q $nextTo &&
 				git cherry-pick --allow-empty $commit &&
 				output=$(_non-adjacent-swap $nextOnto) &&
 				set -- $output &&
+				test -n "$output" &&
 				nextOnto=$1 &&
 				nextTo=$2 &&
-				echo $nextOnto $nextTo   || die "non-adjacent-range-swap: failed"
-			done | tail -1
+				echo $nextOnto $nextTo || {
+					rc=1;
+					die "failed non-adjacent-swap $(_short $nextOnto) @ $(_short $nextTo) -> $output"
+				}
+			done | tail -1) || exit $?
+			test -n "$output" || die "failed to loop: $top ^$from"
+			echo "$output"
 		fi
 	}
 
@@ -325,12 +336,14 @@ _dump() {
 }
 
 _main() {
-	local -a positional
+	local -a positional args
 	local on_conflict=squash
 	local keep_empty_option=--no-keep-empty
 	local update_head=false
 	local squash=true
 	local onto
+
+	args=("$@")
 
 	while test $# -gt 0; do
 		local arg=$1
@@ -420,9 +433,10 @@ _main() {
 		commit=$(git rev-parse -q --verify $commit) || die "failed to parse arguments"
 
 		_thunk() {
-			git checkout -q $commit &&
 			local output from1 top1 from2 top2 &&
-			output=$(_non-adjacent-range-swap $onto $from) &&
+			git checkout -q $commit &&
+			output=$(_non-adjacent-range-swap $onto $from) ||
+			die "range swap failed" &&
 			set -- $output &&
 			from1=$1 &&
 			top1=$2 &&
@@ -430,7 +444,7 @@ _main() {
 			from2=$(git rev-parse HEAD) &&
 			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option --onto $from2 $from1 $top1 &&
 			top2=$(git rev-parse HEAD) &&
-			echo "$from2" "$top2" || die "thunk failed"
+			echo "$from2" "$top2" || die "thunk failed: git transpose ${args[@]}"
 		}
 
 		local output
@@ -445,7 +459,7 @@ _main() {
 		else
 			echo $output
 		fi
-	fi 3>/dev/null
+	fi 3>${DEBUG_FILE}
 }
 
 _main "$@"
