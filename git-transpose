@@ -421,12 +421,16 @@ _main() {
 
 		_thunk() {
 			git checkout -q $commit &&
-			local output &&
+			local output from1 top1 from2 top2 &&
 			output=$(_non-adjacent-range-swap $onto $from) &&
 			set -- $output &&
-			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $2 &&
-			output="$(git rev-parse HEAD)" &&
-			echo $1 $output || die "thunk failed"
+			from1=$1 &&
+			top1=$2 &&
+			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $from1 &&
+			from2=$(git rev-parse HEAD) &&
+			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option --onto $from2 $from1 $top1 &&
+			top2=$(git rev-parse HEAD) &&
+			echo "$from2" "$top2" || die "thunk failed"
 		}
 
 		local output
