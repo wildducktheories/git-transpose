@@ -214,8 +214,8 @@ _non-adjacent-swap() {
 		local onto0=$(git rev-parse --verify -q HEAD^1^1)
 		if test "$onto0" = "$(git rev-parse --verify -q $onto)"; then
 			local top0
-			top0=$(_atomic swap) || exit $?
-			echo $top0 $(git rev-parse --verify -q $top0^1)
+			top0=$(_atomic swap) &&
+			echo $(git rev-parse --verify -q $top0^1) $top0 || exit $?
 			return
 		fi
 
@@ -223,17 +223,15 @@ _non-adjacent-swap() {
 		local onto1=$(_bisect find-earliest-pick-point $onto $top)
 
 		_thunkB() {
-			info "non-adjacent-swap: args $(_short $onto) $(_short $top)"
-
 			info "non-adjacent-swap: $(_short $top) can be cherry-picked onto $(_short $onto1)"
 
 			# cherry-pick $top onto $onto1 to yield $top1
 
 			local top1
 
-			git checkout -q $onto1^0
-			git cherry-pick $top --allow-empty 2>/dev/null || die "non-adjacent-swap: cherry-pick of $(_short $top) @ $(_short HEAD) failed"
-			top1=$(git rev-parse HEAD) || die "non-adjacent-swap: failed to cherry-pick $top onto $onto1"
+			git checkout -q $onto1^0 &&
+			git cherry-pick $top --allow-empty 2>/dev/null &&
+			top1=$(git rev-parse HEAD) || die "non-adjacent-swap: cherry-pick of $(_short $top) @ $(_short $onto1) failed"
 
 			# swap $top1 -> $top2
 
@@ -259,25 +257,23 @@ _non-adjacent-swap() {
 		fi
 
 		set -- $result
-		top3=$1
-		onto2=$2
+		onto2=$1
+		top3=$2
 
 		_thunkC() {
 
 			# cherry-pick $top2 onto $top3 -> $top4
 
-			git checkout -q $top3 &&
-			git rebase --onto HEAD $bottom2 $top2 || die "non-adjacent-swap: failed to rebase $(_short bottom2) $(_short $top2) onto $(_short $top3)"
-			top4=$(git rev-parse HEAD)
-
-			# rebase --onto $top4 $onto1 $top^1 -> $top5
-
-			git rebase --onto $top4 $onto1 $top^1 || die "non-adjacent-swap: failed to rebase --onto $(_short $top4) $(_short $onto1) $(_short tmp-rebase)"
+			git rebase --onto $top3 $bottom2 $top2 &&
+			top4=$(git rev-parse HEAD) ||
+			die "non-adjacent-swap: failed to rebase --onto $(_short $top3) $(_short bottom2) $(_short $top2) " &&
+			git rebase --onto $top4 $onto1 $top^1 ||
+			die "non-adjacent-swap: failed to rebase --onto $(_short $top4) $(_short $onto1) $(_short $top1^1)"
 		}
 
 		_defer-output thunkC
 
-		echo $(git rev-parse HEAD) $onto2
+		echo $onto2 $(git rev-parse HEAD)
 	}
 
 	_atomic thunkA
@@ -297,17 +293,17 @@ _non-adjacent-range-swap() {
 	_thunk() {
 		if test "$onto" = "$from"; then
 			echo $top $top
-			return
+		else
+			git rev-list --reverse $top ^$from | while read commit; do
+				git checkout -q $nextTo &&
+				git cherry-pick --allow-empty $commit &&
+				output=$(_non-adjacent-swap $nextOnto) &&
+				set -- $output &&
+				nextOnto=$1 &&
+				nextTo=$2 &&
+				echo $nextOnto $nextTo   || die "non-adjacent-range-swap: failed"
+			done | tail -1
 		fi
-		git rev-list --reverse $top ^$from | while read commit; do
-			git checkout -q $nextTo &&
-			git cherry-pick --allow-empty $commit &&
-			output=$(_non-adjacent-swap $nextOnto) &&
-			set -- $output &&
-			nextOnto=$2 &&
-			nextTo=$1 || die "non-adjacent-range-swap: failed"
-			echo $nextTo $nextOnto
-		done | tail -1
 	}
 
 	_atomic thunk
@@ -419,25 +415,25 @@ _main() {
 			(_is linearly-reachable $commit $head >/dev/null) || die "commit:$commit is not linearly reachable from head:$head"
 		fi
 
-		onto=$(git rev-parse -q --verify $onto)
-		from=$(git rev-parse -q --verify $from)
-		commit=$(git rev-parse -q --verify $commit)
+		onto=$(git rev-parse -q --verify $onto) &&
+		from=$(git rev-parse -q --verify $from) &&
+		commit=$(git rev-parse -q --verify $commit) || die "failed to parse arguments"
 
 		_thunk() {
 			git checkout -q $commit &&
 			local output &&
 			output=$(_non-adjacent-range-swap $onto $from) &&
 			set -- $output &&
-			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $1 &&
+			GIT_EDITOR="cat >/dev/null" git rebase -q -i $keep_empty_option $onto $2 &&
 			output="$(git rev-parse HEAD)" &&
-			echo $output || die "thunk failed"
+			echo $1 $output || die "thunk failed"
 		}
 
 		local output
 		output=$(_atomic thunk) || exit $?
 		set -- $output
 		if $update_head; then
-			local new_head=$1
+			local new_head=$2
 			(git rebase -q --autostash --onto $new_head "$commit" "$head" || { git rebase --abort; false; }) &&
 			if test -n "$branch"; then
 				git checkout -q -B $branch HEAD
